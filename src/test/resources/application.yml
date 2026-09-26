@@ -1,0 +1,21 @@
+spring:
+  flyway:
+    enabled: true
+    locations:
+      - classpath:db/migration/common
+  mail:
+    host: localhost
+    port: 1025
+
+jwt:
+  secret: 0dTIXBDkSbhltNOJX8M3oMuN5K+vDG4Z7ZaY8rpg8kQ=
+
+mail:
+  from: test@example.com
+
+password-reset:
+  base-url: http://localhost:3000
+
+# CORSで許可するオリジン（本体の application.yml はテストでは読まれないため、ここにも定義が必要）
+cors:
+  allowed-origins: http://localhost:3000

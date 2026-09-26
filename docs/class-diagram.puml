@@ -1,0 +1,232 @@
+@startuml class-diagram
+title e-learning-management-system ドメインクラス図
+
+skinparam classAttributeIconSize 0
+skinparam class {
+  BackgroundColor White
+  BorderColor #333333
+  ArrowColor #333333
+}
+skinparam package {
+  BorderColor #999999
+  FontStyle Bold
+}
+
+' ===== 共有値オブジェクト =====
+' ThumbnailUrl は User / Course が共有、VideoUrl は lesson パッケージ内（Lesson専用）
+class ThumbnailUrl <<ValueObject>> {
+  - value : String
+}
+
+class Order <<ValueObject>> {
+  - value : BigDecimal
+  --
+  + {static} getFirst() : Order
+  + getNext() : Order
+}
+
+' ===== user パッケージ =====
+package "user" {
+  class User <<AggregateRoot>> {
+    - id : UUID
+    - emailAddress : EmailAddress
+    - password : Password
+    - realName : RealName
+    - userName : UserName
+    - thumbnailUrl : ThumbnailUrl
+    - userRole : UserRole
+    - createdAt : LocalDateTime
+    - updatedAt : LocalDateTime
+    --
+    + {static} create(...) : User
+    + update(...) : User
+    + isCurrentPasswordMatch(raw) : boolean
+  }
+
+  enum UserRole {
+    GENERAL
+    ADMIN
+  }
+
+  class UserLoginHistory <<AggregateRoot>> {
+    - id : UUID
+    - userId : UUID
+    - createdAt : LocalDateTime
+    - updatedAt : LocalDateTime
+    --
+    + {static} create(userId) : UserLoginHistory
+    + update() : UserLoginHistory
+  }
+
+  class EmailAddress <<ValueObject>> {
+    - value : String
+  }
+
+  class Password <<ValueObject>> {
+    - value : String
+    --
+    + {static} encryptAndCreate(raw) : Password
+    + matches(raw) : boolean
+  }
+
+  class RealName <<ValueObject>> {
+    - value : String
+  }
+
+  class UserName <<ValueObject>> {
+    - value : String
+  }
+
+  class ProgressRate <<ValueObject>> {
+    - value : BigDecimal
+    --
+    + {static} of(completedCnt, allCnt) : ProgressRate
+    + toBigDecimal() : BigDecimal
+  }
+}
+
+' ===== course パッケージ =====
+package "course" {
+  class Course <<AggregateRoot>> {
+    - id : UUID
+    - thumbnailUrl : ThumbnailUrl
+    - title : CourseTitle
+    - description : CourseDescription
+    - courseOrder : Order
+    - createdAt : LocalDateTime
+    - updatedAt : LocalDateTime
+    --
+    + {static} create(...) : Course
+    + update(...) : Course
+  }
+
+  class CourseTitle <<ValueObject>> {
+    - value : String
+  }
+
+  class CourseDescription <<ValueObject>> {
+    - value : String
+  }
+}
+
+' ===== lesson パッケージ =====
+package "lesson" {
+  class LessonGroup <<AggregateRoot>> {
+    - id : UUID
+    - courseId : UUID
+    - lessonGroupOrder : Order
+    - title : LessonTitle
+    - createdAt : LocalDateTime
+    - updatedAt : LocalDateTime
+    --
+    + {static} create(...) : LessonGroup
+    + withId(id) : LessonGroup
+    + update(title) : LessonGroup
+  }
+
+  class Lesson <<AggregateRoot>> {
+    - id : UUID
+    - lessonGroupId : UUID
+    - courseId : UUID
+    - lessonOrder : Order
+    - title : LessonTitle
+    - content : LessonContent
+    - videoUrl : VideoUrl
+    - createdAt : LocalDateTime
+    - updatedAt : LocalDateTime
+    --
+    + {static} create(...) : Lesson
+    + withId(id) : Lesson
+    + update(...) : Lesson
+    + updateOrder(newOrder) : Lesson
+  }
+
+  class LessonTitle <<ValueObject>> {
+    - value : String
+  }
+
+  class LessonContent <<ValueObject>> {
+    - value : String
+  }
+
+  class VideoUrl <<ValueObject>> {
+    - value : String
+  }
+}
+
+' ===== UserLesson（中間テーブル） =====
+class UserLesson <<AggregateRoot>> {
+  - id : UUID
+  - userId : UUID
+  - lessonId : UUID
+  - createdAt : LocalDateTime
+  - updatedAt : LocalDateTime
+  --
+  + {static} create(userId, lessonId) : UserLesson
+  + update() : UserLesson
+}
+
+' ===== news パッケージ =====
+package "news" {
+  class News <<AggregateRoot>> {
+    - id : UUID
+    - title : NewsTitle
+    - content : NewsContent
+    - createdAt : LocalDateTime
+    - updatedAt : LocalDateTime
+    --
+    + {static} create(title, content) : News
+    + update(title, content) : News
+  }
+
+  class NewsTitle <<ValueObject>> {
+    - value : String
+  }
+
+  class NewsContent <<ValueObject>> {
+    - value : String
+  }
+}
+
+' ===== passwordreset パッケージ =====
+package "passwordreset" {
+  class PasswordResetToken <<AggregateRoot>> {
+    - id : UUID
+    - userId : UUID
+    - token : String
+    - expiresAt : LocalDateTime
+    - usedAt : LocalDateTime
+    --
+    + {static} create(userId, token, expiresAt) : PasswordResetToken
+    + isExpired() : boolean
+    + isUsed() : boolean
+    + markAsUsed() : PasswordResetToken
+  }
+}
+
+' ===== 集約ルート間の関連（外部キーIDによる参照） =====
+User "1" --> "0..*" UserLoginHistory : userId
+User "1" --> "0..*" UserLesson : userId
+Course "1" --> "0..*" LessonGroup : courseId
+LessonGroup "1" --> "0..*" Lesson : lessonGroupId
+Lesson "1" --> "0..*" UserLesson : lessonId
+User "1" --> "0..*" PasswordResetToken : userId
+
+' ===== 値オブジェクトの構成（各集約内） =====
+User *-- EmailAddress
+User *-- Password
+User *-- RealName
+User *-- UserName
+User *-- UserRole
+
+Course *-- CourseTitle
+Course *-- CourseDescription
+
+LessonGroup *-- LessonTitle
+Lesson *-- LessonTitle
+Lesson *-- LessonContent
+
+News *-- NewsTitle
+News *-- NewsContent
+
+@enduml

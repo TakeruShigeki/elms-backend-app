@@ -1,0 +1,11 @@
+jwt:
+  secret: 0dTIXBDkSbhltNOJX8M3oMuN5K+vDG4Z7ZaY8rpg8kQ=
+
+upload:
+  directory: uploads
+
+spring:
+  flyway:
+    locations: classpath:db/migration
+    placeholders:
+      s3BaseUrl: /uploads

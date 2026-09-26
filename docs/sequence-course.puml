@@ -1,0 +1,151 @@
+@startuml sequence-course
+title 【シーケンス図】コース
+
+skinparam sequence {
+  ArrowColor #333333
+  ActorBorderColor #333333
+  LifeLineBorderColor #333333
+  ParticipantBorderColor #333333
+  ParticipantBackgroundColor White
+}
+skinparam noteBackgroundColor #FFFDE7
+skinparam noteBorderColor #999999
+
+actor Client
+participant "CourseController" as Controller
+participant "CourseApplicationService" as AppService
+participant "CourseRepository" as Repo
+database "DB" as DB
+
+note over Client
+  GET /api/courses と GET /api/courses/{courseId} は認証済みなら利用可。
+  作成・更新・削除は管理者（ADMIN）のみ。権限不足は 403。
+  認証・JWT検証の詳細は「認証」シーケンス図を参照。
+end note
+
+' ============================================================
+' コース一覧取得
+' ============================================================
+== コース一覧取得 (GET /api/courses) ==
+
+Client -> Controller : GET /api/courses\n?pageNum=1&pageSize=10
+
+Controller -> AppService : findCourses(pageNum, pageSize)
+
+AppService -> Repo : findCourses(PagerForRequest)
+Repo -> DB : SELECT * FROM courses ORDER BY course_order LIMIT ? OFFSET ?
+DB --> Repo : List<Course>
+Repo --> AppService : List<Course>
+
+AppService -> Repo : countCourses()
+Repo -> DB : SELECT COUNT(*)
+DB --> Repo : totalSize (int)
+Repo --> AppService : int
+
+AppService --> Controller : CoursePageDto
+Controller --> Client : 200 OK { courseDtos[], totalSize, pageNum, pageSize }
+
+' ============================================================
+' コース詳細取得
+' ============================================================
+== コース詳細取得 (GET /api/courses/{courseId}) ==
+
+Client -> Controller : GET /api/courses/{courseId}
+
+Controller -> AppService : findCourseById(courseId)
+
+AppService -> Repo : findCourseById(courseId)
+Repo -> DB : SELECT WHERE id = ?
+DB --> Repo : Optional<Course>
+
+alt コースが存在しない
+  AppService --> Controller : ResourceNotFoundException
+  Controller --> Client : 404 Not Found
+else コースが存在する
+  Repo --> AppService : Course
+  AppService --> Controller : CourseDto
+  Controller --> Client : 200 OK { id, title, description, thumbnailUrl, courseOrder, ... }
+end
+
+' ============================================================
+' コース新規作成
+' ============================================================
+== コース新規作成 (POST /api/courses) ==
+
+Client -> Controller : POST /api/courses\n{ title, description, thumbnailUrl }
+
+Controller -> AppService : createCourse(CourseCreateCommand)
+
+AppService -> Repo : issueCourseOrder()
+note right: 表示順が最大のコースを1件取得し\ncourseOrder.getNext()（+1024）を返す。\n0件なら FIRST_ORDER(1024)
+Repo -> DB : SELECT ... ORDER BY course_order DESC LIMIT 1
+DB --> Repo : Course or empty
+Repo --> AppService : Order
+
+AppService -> Repo : createCourse(Course.create(..., order))
+Repo -> DB : INSERT INTO courses
+DB --> Repo : ok
+
+AppService --> Controller : void
+Controller --> Client : 200 OK
+
+' ============================================================
+' コース更新
+' ============================================================
+== コース更新 (PUT /api/courses/{courseId}) ==
+
+Client -> Controller : PUT /api/courses/{courseId}\n{ title, description, thumbnailUrl, courseOrder }
+
+Controller -> AppService : updateCourse(CourseUpdateCommand)
+
+AppService -> Repo : findCourseById(courseId)
+Repo -> DB : SELECT WHERE id = ?
+DB --> Repo : Optional<Course>
+
+alt コースが存在しない
+  AppService --> Controller : ResourceNotFoundException
+  Controller --> Client : 404 Not Found
+else コースが存在する
+  Repo --> AppService : Course
+
+  AppService -> Repo : findCourseByCourseOrder(courseOrder)
+  note right of AppService
+    他コースが同じ表示順を使用中なら
+    BadRequestException（この表示順はすでに使用されています）→ 400
+  end note
+
+  AppService -> Repo : updateCourse(course.update(...))
+  Repo -> DB : UPDATE courses SET ...
+  DB --> Repo : ok
+
+  AppService --> Controller : void
+  Controller --> Client : 200 OK
+end
+
+' ============================================================
+' コース削除
+' ============================================================
+== コース削除 (DELETE /api/courses/{courseId}) ==
+
+Client -> Controller : DELETE /api/courses/{courseId}
+
+Controller -> AppService : deleteCourseById(courseId)
+
+AppService -> Repo : findCourseById(courseId)
+Repo -> DB : SELECT WHERE id = ?
+DB --> Repo : Optional<Course>
+
+note over AppService
+  コースが存在しなくてもエラーにはしない（冪等性）
+end note
+
+alt コースが存在する場合のみ削除
+  AppService -> Repo : deleteCourseById(courseId)
+  Repo -> DB : DELETE FROM courses WHERE id = ?
+  DB --> Repo : ok
+end
+
+AppService --> Controller : void
+Controller --> Client : 204 No Content
+
+@enduml

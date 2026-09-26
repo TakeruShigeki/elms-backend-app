@@ -1,0 +1,412 @@
+@startuml sequence-lesson
+title 【シーケンス図】レッスン・レッスングループ
+
+skinparam sequence {
+  ArrowColor #333333
+  ActorBorderColor #333333
+  LifeLineBorderColor #333333
+  ParticipantBorderColor #333333
+  ParticipantBackgroundColor White
+}
+skinparam noteBackgroundColor #FFFDE7
+skinparam noteBorderColor #999999
+
+actor Client
+participant "LessonGroupController" as LGController
+participant "LessonController" as LController
+participant "CourseController" as CController
+participant "LessonGroupApplicationService" as LGAppService
+participant "LessonApplicationService" as LAppService
+participant "LessonGroupDomainService" as LGDomainService
+participant "LessonDomainService" as LDomainService
+participant "LessonGroupRepository" as LGRepo
+participant "LessonRepository" as LRepo
+participant "CourseRepository" as CourseRepo
+database "DB" as DB
+
+note over Client
+  GET /api/courses/{courseId}/lessons、GET /api/courses/lessons/export、
+  POST /api/courses/{courseId}/lessons/import は CourseController が受け付ける。
+  レッスングループ・レッスンの作成/更新/削除/並び替え、および CSV 入出力は管理者（ADMIN）のみ。
+  GET /api/courses/{courseId}/lessons は認証済みなら利用可。
+end note
+
+note over Client
+  全APIはJWT認証済みであることが前提（認証・JWT検証の詳細は「認証」シーケンス図を参照）
+end note
+
+' ============================================================
+' レッスングループ新規作成
+' ============================================================
+== レッスングループ新規作成 (POST /api/courses/{courseId}/lesson-groups) ==
+
+Client -> LGController : POST /api/courses/{courseId}/lesson-groups\n{ title }
+
+LGController -> LGAppService : createLessonGroup(LessonGroupCreateCommand)
+
+LGAppService -> CourseRepo : findCourseById(courseId)
+CourseRepo -> DB : SELECT FROM courses WHERE id = ?
+DB --> CourseRepo : Optional<Course>
+
+alt コースが存在しない
+  LGAppService --> LGController : ResourceNotFoundException
+  LGController --> Client : 404 Not Found
+  note right of LGAppService
+    存在チェックをしないまま登録すると外部キー制約違反となり、
+    クライアント起因の誤りが500として返ってしまうため、事前に検証する。
+  end note
+else コースが存在する
+  CourseRepo --> LGAppService : Course
+
+  LGAppService -> LGDomainService : issueLessonGroupOrder(courseId)
+  LGDomainService -> LGRepo : 当該コースの最大lessonGroupOrderを取得
+  LGRepo -> DB : SELECT MAX(lesson_group_order) WHERE course_id = ?
+  DB --> LGRepo : maxOrder
+  LGRepo --> LGDomainService : maxOrder
+  LGDomainService --> LGAppService : 新しいOrder（末尾に追加）
+
+  LGAppService -> LGRepo : createLessonGroup(LessonGroup.create(..., order))
+  LGRepo -> DB : INSERT INTO lesson_groups
+  DB --> LGRepo : 作成されたLessonGroup
+  LGRepo --> LGAppService : LessonGroup
+
+  LGAppService --> LGController : LessonGroupDto
+  LGController --> Client : 200 OK { id, courseId, lessonGroupOrder, name, ... }
+end
+
+' ============================================================
+' レッスングループ更新
+' ============================================================
+== レッスングループ更新 (PUT /api/courses/{courseId}/lesson-groups/{lessonGroupId}) ==
+
+Client -> LGController : PUT /api/courses/{courseId}/lesson-groups/{lessonGroupId}\n{ title }
+
+LGController -> LGAppService : updateLessonGroup(LessonGroupUpdateCommand)
+
+LGAppService -> LGRepo : findLessonGroupById(lessonGroupId)
+LGRepo -> DB : SELECT WHERE id = ?
+DB --> LGRepo : Optional<LessonGroup>
+
+alt レッスングループが存在しない
+  LGAppService --> LGController : ResourceNotFoundException
+  LGController --> Client : 404 Not Found
+else レッスングループが存在する
+  LGRepo --> LGAppService : LessonGroup
+
+  LGAppService -> LGRepo : updateLessonGroup(lessonGroup.update(title))
+  LGRepo -> DB : UPDATE lesson_groups SET title = ?
+  DB --> LGRepo : 更新されたLessonGroup
+  LGRepo --> LGAppService : LessonGroup
+
+  LGAppService -> LRepo : findLessonsByLessonGroupId(lessonGroupId)
+  LRepo -> DB : SELECT * FROM lessons WHERE lesson_group_id = ?
+  DB --> LRepo : List<Lesson>
+  LRepo --> LGAppService : List<Lesson>
+
+  LGAppService --> LGController : LessonGroupDto（lessons含む）
+  LGController --> Client : 200 OK { id, name, lessons[], ... }
+end
+
+' ============================================================
+' レッスングループ削除
+' ============================================================
+== レッスングループ削除 (DELETE /api/courses/{courseId}/lesson-groups/{lessonGroupId}) ==
+
+Client -> LGController : DELETE /api/courses/{courseId}/lesson-groups/{lessonGroupId}
+
+LGController -> LGAppService : deleteLessonGroupById(lessonGroupId)
+
+LGAppService -> LGRepo : findLessonGroupById(lessonGroupId)
+LGRepo -> DB : SELECT WHERE id = ?
+DB --> LGRepo : Optional<LessonGroup>
+
+note over LGAppService
+  レッスングループが存在しなくてもエラーにはしない（冪等性）
+end note
+
+alt レッスングループが存在する場合のみ削除
+  LGAppService -> LGRepo : deleteLessonGroupById(lessonGroupId)
+  LGRepo -> DB : DELETE FROM lesson_groups WHERE id = ?
+  DB --> LGRepo : ok
+end
+
+LGAppService --> LGController : void
+LGController --> Client : 204 No Content
+
+' ============================================================
+' コース内レッスン一覧取得（グループ別）
+' ============================================================
+== コース内レッスン一覧取得 (GET /api/courses/{courseId}/lessons) ==
+
+Client -> CController : GET /api/courses/{courseId}/lessons
+
+CController -> LAppService : findLessonsGroupedByLessonGroup(courseId)
+
+LAppService -> LRepo : findLessonsGroupedByLessonGroup(courseId)
+LRepo -> DB : SELECT lesson_groups LEFT JOIN lessons\nWHERE course_id = ?\nORDER BY lesson_group_order, lesson_order
+DB --> LRepo : JOINした行（LessonGroupWithLessonRow[]）
+note over LRepo
+  行をレッスングループ単位で入れ子にまとめ
+  List<LessonGroupWithLessons> に変換（toDomainList）
+end note
+LRepo --> LAppService : List<LessonGroupWithLessons>
+
+LAppService -> LAppService : 各グループを LessonGroupDto に変換し\nCourseLessonsDto を組み立て
+LAppService --> CController : CourseLessonsDto
+CController --> Client : 200 OK { courseId, lessonGroups: [{ id, name, lessons: [...] }] }
+
+' ============================================================
+' レッスン詳細取得（管理者向け）
+' ============================================================
+== レッスン詳細取得 (GET /api/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons/{lessonId}) ==
+
+Client -> LController : GET /api/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons/{lessonId}
+
+LController -> LAppService : findLessonById(courseId, lessonGroupId, lessonId)
+
+LAppService -> LRepo : findById(lessonId)
+LRepo -> DB : SELECT WHERE id = ?
+DB --> LRepo : Optional<Lesson>
+
+alt レッスンが存在しない
+  LAppService --> LController : ResourceNotFoundException
+  LController --> Client : 404 Not Found
+else レッスンが存在する
+  LRepo --> LAppService : Lesson
+  LAppService -> LAppService : courseId・lessonGroupIdが一致するか検証
+  alt 不一致
+    LAppService --> LController : ResourceNotFoundException
+    LController --> Client : 404 Not Found
+  else 一致
+    LAppService --> LController : LessonDto
+    LController --> Client : 200 OK { id, title, content, videoUrl, lessonOrder, ... }
+  end
+end
+
+' ============================================================
+' レッスン新規作成
+' ============================================================
+== レッスン新規作成 (POST /api/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons) ==
+
+Client -> LController : POST /api/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons\n{ title, content, videoUrl }
+
+LController -> LAppService : createLesson(LessonCreateCommand)
+
+LAppService -> LGRepo : findLessonGroupById(lessonGroupId)
+LGRepo -> DB : SELECT FROM lesson_groups WHERE id = ?
+DB --> LGRepo : Optional<LessonGroup>
+
+alt レッスングループが存在しない、またはパスのコースに属さない
+  LAppService --> LController : ResourceNotFoundException
+  LController --> Client : 404 Not Found
+  note right of LAppService
+    存在チェックをしないまま登録すると外部キー制約違反となり、
+    クライアント起因の誤りが500として返ってしまうため、事前に検証する。
+  end note
+else レッスングループが存在し、パスのコースに属する
+  LGRepo --> LAppService : LessonGroup
+
+  LAppService -> LDomainService : issueLessonOrder(lessonGroupId)
+  LDomainService -> LRepo : 当該レッスングループの最大lessonOrderを取得
+  LRepo -> DB : SELECT MAX(lesson_order) WHERE lesson_group_id = ?
+  DB --> LRepo : maxOrder
+  LRepo --> LDomainService : maxOrder
+  LDomainService --> LAppService : 新しいOrder（末尾に追加）
+
+  LAppService -> LRepo : createLesson(Lesson.create(..., order))
+  LRepo -> DB : INSERT INTO lessons
+  DB --> LRepo : 作成されたLesson
+  LRepo --> LAppService : Lesson
+
+  LAppService --> LController : LessonDto
+  LController --> Client : 200 OK { id, title, lessonOrder, ... }
+end
+
+' ============================================================
+' レッスン更新
+' ============================================================
+== レッスン更新 (PUT /api/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons/{lessonId}) ==
+
+Client -> LController : PUT /api/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons/{lessonId}\n{ title, content, videoUrl }
+
+LController -> LAppService : updateLesson(LessonUpdateCommand)
+
+LAppService -> LRepo : findById(lessonId)
+LRepo -> DB : SELECT WHERE id = ?
+DB --> LRepo : Optional<Lesson>
+
+alt レッスンが存在しない
+  LAppService --> LController : ResourceNotFoundException
+  LController --> Client : 404 Not Found
+else レッスンが存在する
+  LRepo --> LAppService : Lesson
+
+  LAppService -> LRepo : updateLesson(lesson.update(...))
+  LRepo -> DB : UPDATE lessons SET ...
+  DB --> LRepo : 更新されたLesson
+  LRepo --> LAppService : Lesson
+
+  LAppService --> LController : LessonDto
+  LController --> Client : 200 OK { id, title, content, videoUrl, ... }
+end
+
+' ============================================================
+' レッスン削除
+' ============================================================
+== レッスン削除 (DELETE /api/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons/{lessonId}) ==
+
+Client -> LController : DELETE /api/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons/{lessonId}
+
+LController -> LAppService : deleteLessonById(lessonId)
+
+LAppService -> LRepo : findById(lessonId)
+LRepo -> DB : SELECT WHERE id = ?
+DB --> LRepo : Optional<Lesson>
+
+note over LAppService
+  レッスンが存在しなくてもエラーにはしない（冪等性）
+end note
+
+alt レッスンが存在する場合のみ削除
+  LAppService -> LRepo : deleteLessonById(lessonId)
+  LRepo -> DB : DELETE FROM lessons WHERE id = ?
+  DB --> LRepo : ok
+end
+
+LAppService --> LController : void
+LController --> Client : 204 No Content
+
+' ============================================================
+' レッスン並び順更新
+' ============================================================
+== レッスン並び順更新 (PUT .../lessons/{lessonId}/order) ==
+
+Client -> LController : PUT /api/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons/{lessonId}/order\n{ precedingLessonId, followingLessonId }
+
+note over Client
+  ドラッグ&ドロップで並び替えた際に呼び出す。
+  移動先の前後のレッスンIDを渡す。
+  前後どちらか一方がnullの場合は先頭または末尾への移動を意味する。
+  前後どちらも null の場合は 400。
+end note
+
+LController -> LAppService : updateLessonOrder(LessonOrderUpdateCommand)
+
+LAppService -> LRepo : findByIdIn([targetId, precedingId, followingId])
+LRepo -> DB : SELECT WHERE id IN (...)
+DB --> LRepo : List<Lesson>
+LRepo --> LAppService : List<Lesson>
+
+alt 対象レッスン、または指定した前後IDが存在しない
+  LAppService --> LController : ResourceNotFoundException
+  LController --> Client : 404 Not Found
+else 前後どちらも未指定
+  LAppService --> LController : BadRequestException（移動先の前後いずれかのレッスンを指定してください）
+  LController --> Client : 400 Bad Request
+else 前後が指定されている
+  LAppService -> LDomainService : calculateNewOrder(precedingOrder, followingOrder)
+  note over LDomainService
+    前後のorderから新しい順序値を計算する（小数第4位・HALF_UP）。
+    ・先頭移動(preceding=null): followingOrder / 2
+    ・末尾移動(following=null): precedingOrder + INTERVAL_ORDER(1024)
+    ・中間移動: (precedingOrder + followingOrder) / 2
+  end note
+  LDomainService --> LAppService : newOrder (BigDecimal)
+
+  LAppService -> LDomainService : hasRoomForNewOrder(newOrder, precedingOrder, followingOrder)
+  alt 中間値が前後に収まらない（numeric(10,4) で潰れた場合）
+    LAppService --> LController : BadRequestException（この位置にはこれ以上移動できません...）
+    LController --> Client : 400 Bad Request
+  else 空きがある
+    LAppService -> LRepo : updateLesson(targetLesson.updateOrder(newOrder))
+    LRepo -> DB : UPDATE lessons SET lesson_order = ? WHERE id = ?
+    DB --> LRepo : 更新されたLesson
+    LRepo --> LAppService : Lesson
+
+    LAppService --> LController : LessonDto
+    LController --> Client : 200 OK { id, lessonOrder（新しい値）, ... }
+  end
+end
+
+' ============================================================
+' 全レッスンCSVエクスポート
+' ============================================================
+== 全レッスンCSVエクスポート (GET /api/courses/lessons/export) ==
+note over Client
+  管理者のみ（ADMIN）。全レッスンをコース・グループ情報付きで出力する。
+  ヘッダー: コースID, コース名, レッスングループID, レッスングループ名,
+  レッスンID, レッスンタイトル, レッスンの動画URL。
+  このCSVをそのまま import には使えない（列が異なる）。
+end note
+
+Client -> CController : GET /api/courses/lessons/export
+
+CController -> LAppService : exportAllLessonsCsv()
+
+LAppService -> LRepo : findAllLessons()
+LRepo -> DB : SELECT FROM courses INNER JOIN lesson_groups INNER JOIN lessons\nORDER BY course_order, lesson_group_order, lesson_order
+DB --> LRepo : 全レッスン（コース・グループ情報付き）
+LRepo --> LAppService : List<LessonWithCourseAndLessonGroup>
+
+LAppService -> LAppService : CSVバイト列生成\n（BOM付きUTF-8・カンマ/ダブルクォートエスケープ）\n0件でもヘッダー行のみ返す
+
+LAppService --> CController : ByteArrayResource (CSVバイト列)
+CController --> Client : 200 OK\nContent-Type: text/csv\nContent-Disposition: attachment; filename=lessons.csv
+
+' ============================================================
+' レッスンCSVインポート（コース内を洗い替え）
+' ============================================================
+== レッスンCSVインポート (POST /api/courses/{courseId}/lessons/import) ==
+note over Client
+  管理者のみ（ADMIN）。対象コースのレッスン構成をCSV内容で洗い替える（単一トランザクション）。
+  取込ヘッダー: レッスングループタイトル, レッスンタイトル, レッスン説明, レッスンの動画URL。
+end note
+
+Client -> CController : POST /api/courses/{courseId}/lessons/import\nmultipart/form-data（file=*.csv）
+
+CController -> CController : LessonImportCommand.from(courseId, filename, bytes)
+note right of CController
+  ファイル不正・ヘッダー不一致・必須列欠落・文字数超過・
+  取り込み対象0件はここで 400（コース存在確認より先）。
+end note
+
+CController -> LAppService : importLessonsCsv(LessonImportCommand)
+
+LAppService -> CourseRepo : findCourseById(courseId)
+CourseRepo -> DB : SELECT FROM courses WHERE id = ?
+DB --> CourseRepo : Optional<Course>
+
+alt コースが存在しない
+  LAppService --> CController : ResourceNotFoundException
+  CController --> Client : 404 Not Found
+else コースが存在する
+  CourseRepo --> LAppService : Course
+
+  LAppService -> LAppService : CSV行をレッスングループタイトル単位に集約
+
+  LAppService -> LRepo : deleteLessonsByCourseId(courseId)
+  LRepo -> DB : DELETE FROM lessons WHERE course_id = ?\n（user_lessons も ON DELETE CASCADE で削除）
+  DB --> LRepo : ok
+  LAppService -> LGRepo : deleteLessonGroupsByCourseId(courseId)
+  LGRepo -> DB : DELETE FROM lesson_groups WHERE course_id = ?
+  DB --> LGRepo : ok
+
+  LAppService -> LAppService : レッスングループとレッスンを生成\n（CSV初出順に order 採番。IDはアプリ側で採番する）
+  note right of LAppService
+    IDをアプリ側で採番するため、登録前に親のIDが確定する。
+    そのためレッスングループを1件ずつINSERTして採番結果を待つ必要がなく、
+    親子それぞれ1回の一括登録で完結する。
+  end note
+
+  LAppService -> LGRepo : createLessonGroups(lessonGroups)
+  LGRepo -> DB : INSERT INTO lesson_groups（一括）
+  DB --> LGRepo : ok
+  LAppService -> LRepo : createLessons(lessons)（グループ内順に order 採番）
+  LRepo -> DB : INSERT INTO lessons（一括）
+  DB --> LRepo : ok
+
+  LAppService --> CController : LessonImportResponseDto\n{ importedLessonGroupCount, importedLessonCount }
+  CController --> Client : 200 OK { importedLessonGroupCount, importedLessonCount }
+end
+
+@enduml

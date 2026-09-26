@@ -1,0 +1,56 @@
+@startuml sequence-file-upload
+title 【シーケンス図】ファイルアップロード
+
+skinparam sequence {
+  ArrowColor #333333
+  ActorBorderColor #333333
+  LifeLineBorderColor #333333
+  ParticipantBorderColor #333333
+  ParticipantBackgroundColor White
+}
+skinparam noteBackgroundColor #FFFDE7
+skinparam noteBorderColor #999999
+
+actor Client
+participant "FileUploadController" as Controller
+participant "FileStorageApplicationService" as AppService
+participant "FileStorage\n(S3 / ローカル)" as Storage
+
+note over Client
+  管理者（ADMIN）のみ。権限不足は 403。
+  JWT認証済みが前提（認証・JWT検証の詳細は「認証」シーケンス図を参照）。
+  コース・ユーザーのサムネイル画像のアップロードに使用する。
+end note
+
+' ============================================================
+' ファイルアップロード
+' ============================================================
+== ファイルアップロード (POST /api/files/upload) ==
+
+Client -> Controller : POST /api/files/upload\nContent-Type: multipart/form-data\n{ file: <バイナリ> }
+
+Controller -> AppService : saveImage(MultipartFile)
+
+alt ファイル未指定または空
+  AppService --> Controller : BadRequestException（ファイルを指定してください）
+  Controller --> Client : 400 Bad Request
+else 保存成功
+  AppService -> Storage : ファイルを保存
+  Storage --> AppService : 保存先パス（URL or 相対パス）
+  AppService --> Controller : filePath (String)
+  Controller --> Client : 200 OK\n"保存先パス"
+else 保存失敗（I/O・S3 等）
+  AppService --> Controller : Exception
+  note right of Controller
+    コントローラは例外を握らない。
+    GlobalExceptionHandler が 500 INTERNAL_ERROR にする。
+  end note
+  Controller --> Client : 500 Internal Server Error
+end
+
+note over Client
+  返却されたfilePathを使ってコース・ユーザーの thumbnailUrl に設定する。
+  例: コース作成APIの thumbnailUrl フィールドに指定する。
+end note
+
+@enduml

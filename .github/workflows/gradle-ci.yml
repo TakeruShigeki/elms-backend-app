@@ -1,0 +1,32 @@
+name: Gradle CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ソースコードをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: JDKをセットアップ
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Gradleキャッシュの設定（任意でビルド高速化）
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: DockerのDBコンテナを起動
+        run: docker compose -f docker-compose-dev.yml up -d

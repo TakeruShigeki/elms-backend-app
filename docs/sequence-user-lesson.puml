@@ -1,0 +1,261 @@
+@startuml sequence-user-lesson
+title 【シーケンス図】ユーザーレッスン
+
+skinparam sequence {
+  ArrowColor #333333
+  ActorBorderColor #333333
+  LifeLineBorderColor #333333
+  ParticipantBorderColor #333333
+  ParticipantBackgroundColor White
+}
+skinparam noteBackgroundColor #FFFDE7
+skinparam noteBorderColor #999999
+
+actor Client
+participant "UserCourseController" as Controller
+participant "UserCourseApplicationService" as CourseAppService
+participant "UserLessonApplicationService" as AppService
+participant "UserRepository" as UserRepo
+participant "CourseRepository" as CourseRepo
+participant "LessonRepository" as LRepo
+participant "UserLessonRepository" as ULRepo
+database "DB" as DB
+
+note over Client
+  全APIはJWT認証済みが前提（認証・JWT検証の詳細は「認証」シーケンス図を参照）。
+  UserLessonはレッスンの完了状態を管理する中間テーブル。
+  レコードが存在する ＝ 完了済み、レコードが存在しない ＝ 未完了。
+end note
+
+' ============================================================
+' 該当ユーザーのコース一覧取得（進捗率付き）
+' ============================================================
+== 該当ユーザーのコース一覧取得 (GET /api/users/{userId}/courses) ==
+
+Client -> Controller : GET /api/users/{userId}/courses
+
+Controller -> CourseAppService : findUserCourses(userId)
+
+CourseAppService -> UserRepo : findUserById(userId)
+UserRepo -> DB : SELECT FROM users WHERE id = ?
+DB --> UserRepo : Optional<User>
+
+alt ユーザーが存在しない
+  CourseAppService --> Controller : ResourceNotFoundException
+  Controller --> Client : 404 Not Found
+else ユーザーが存在する
+  UserRepo --> CourseAppService : User
+
+  CourseAppService -> CourseRepo : countCourses()
+  CourseRepo -> DB : SELECT COUNT(*) FROM courses
+  DB --> CourseRepo : 件数
+  CourseRepo --> CourseAppService : totalCourses
+
+  alt コースが0件
+    CourseAppService --> Controller : []（空リスト）
+    Controller --> Client : 200 OK []
+  else コースが存在する
+    CourseAppService -> CourseRepo : findCourses(pager)\n（全件を1ページに載せる）
+    CourseRepo -> DB : SELECT FROM courses ORDER BY course_order
+    DB --> CourseRepo : List<Course>
+    CourseRepo --> CourseAppService : List<Course>
+
+    loop 各コース
+      CourseAppService -> LRepo : countLessons(courseId)
+      LRepo --> CourseAppService : コース内レッスン数
+      CourseAppService -> ULRepo : countCompletedLessonsByUserIdAndCourseId(userId, courseId)
+      ULRepo --> CourseAppService : 完了レッスン数
+      CourseAppService -> CourseAppService : ProgressRate.of(完了, 全体) → courseProgress
+    end
+
+    CourseAppService --> Controller : List<UserCourseDto>
+    Controller --> Client : 200 OK [{ id, title, thumbnailUrl, courseOrder, courseProgress, ... }]
+  end
+end
+
+' ============================================================
+' 該当ユーザーのレッスン一覧取得（完了状態付き）
+' ============================================================
+== 該当ユーザーのレッスン一覧取得 (GET /api/users/{userId}/courses/{courseId}/lessons) ==
+
+Client -> Controller : GET /api/users/{userId}/courses/{courseId}/lessons
+
+Controller -> AppService : findUserLessons(userId, courseId)
+
+AppService -> UserRepo : findUserById(userId)
+UserRepo -> DB : SELECT FROM users WHERE id = ?
+DB --> UserRepo : Optional<User>
+
+alt ユーザーが存在しない
+  AppService --> Controller : ResourceNotFoundException
+  Controller --> Client : 404 Not Found
+else ユーザーが存在する
+  UserRepo --> AppService : User
+
+  AppService -> CourseRepo : findCourseById(courseId)
+  CourseRepo -> DB : SELECT FROM courses WHERE id = ?
+  DB --> CourseRepo : Optional<Course>
+
+  alt コースが存在しない
+    AppService --> Controller : ResourceNotFoundException
+    Controller --> Client : 404 Not Found
+  else コースが存在する
+    CourseRepo --> AppService : Course
+
+    AppService -> LRepo : findLessonsGroupedByLessonGroup(courseId)
+    LRepo -> DB : SELECT lesson_groups LEFT JOIN lessons\nWHERE course_id = ?\nORDER BY lesson_group_order, lesson_order
+    DB --> LRepo : List<LessonGroupWithLessons>
+    LRepo --> AppService : List<LessonGroupWithLessons>
+
+    AppService -> AppService : 全レッスンIDを収集
+
+    alt レッスンが0件
+      AppService -> AppService : completedLessonIds = 空集合
+    else レッスンあり
+      AppService -> ULRepo : findLessonIdByUserIdAndLessonIdIn(userId, lessonIds)
+      ULRepo -> DB : SELECT lesson_id FROM user_lessons\nWHERE user_id = ? AND lesson_id IN (...)
+      DB --> ULRepo : 完了済みlesson_id
+      ULRepo --> AppService : Set<UUID>（完了済みレッスンID）
+    end
+
+    AppService -> AppService : グループ単位で UserLessonGroupDto を生成\n各レッスンの isLessonCompleted = 完了集合に含まれるか
+    AppService --> Controller : List<UserLessonGroupDto>
+    Controller --> Client : 200 OK [{ id, name, userLessons: [{ lesson, isLessonCompleted }] }]
+  end
+end
+
+' ============================================================
+' ユーザーレッスン詳細取得
+' ============================================================
+== ユーザーレッスン詳細取得 ==
+note over Client
+  GET /api/users/{userId}/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons/{lessonId}
+end note
+
+Client -> Controller : GET /api/users/{userId}/courses/{courseId}/\nlesson-groups/{lessonGroupId}/lessons/{lessonId}
+
+Controller -> AppService : findUserLessonDetail(userId, courseId, lessonGroupId, lessonId)
+
+AppService -> LRepo : findById(lessonId)
+LRepo -> DB : SELECT FROM lessons WHERE id = ?
+DB --> LRepo : Optional<Lesson>
+
+alt レッスンが存在しない
+  AppService --> Controller : ResourceNotFoundException
+  Controller --> Client : 404 Not Found
+else レッスンが存在する
+  LRepo --> AppService : Lesson
+  AppService -> AppService : courseId・lessonGroupIdが一致するか検証
+
+  alt 不一致（別のコース・グループのレッスン）
+    AppService --> Controller : ResourceNotFoundException
+    Controller --> Client : 404 Not Found
+  else 一致
+    AppService -> ULRepo : findByUserIdAndLessonId(userId, lessonId)
+    ULRepo -> DB : SELECT FROM user_lessons WHERE userId = ? AND lessonId = ?
+    DB --> ULRepo : Optional<UserLesson>
+    ULRepo --> AppService : Optional<UserLesson>
+
+    AppService -> AppService : isLessonCompleted = (Optional.isPresent())
+
+    AppService --> Controller : UserLessonDetailDto\n{ lesson情報, isLessonCompleted }
+    Controller --> Client : 200 OK { id, title, content, videoUrl, isLessonCompleted, ... }
+  end
+end
+
+' ============================================================
+' レッスン完了状態更新：完了にする
+' ============================================================
+== レッスン完了状態更新（完了） ==
+note over Client
+  PUT /api/users/{userId}/courses/{courseId}/lesson-groups/{lessonGroupId}/lessons/{lessonId}/completion
+end note
+
+Client -> Controller : PUT .../completion\n{ isLessonCompleted: true }
+
+Controller -> AppService : updateUserLesson(courseId, lessonGroupId, command)
+
+AppService -> LRepo : findById(lessonId)
+LRepo -> DB : SELECT FROM lessons
+DB --> LRepo : Optional<Lesson>
+
+alt レッスンが存在しない、または courseId・lessonGroupId が不一致
+  AppService --> Controller : ResourceNotFoundException
+  Controller --> Client : 404 Not Found
+else レッスンがパスと一致する
+  LRepo --> AppService : Lesson
+
+  AppService -> UserRepo : findUserById(userId)
+  UserRepo -> DB : SELECT FROM users WHERE id = ?
+  DB --> UserRepo : Optional<User>
+
+  alt ユーザーが存在しない
+    AppService --> Controller : ResourceNotFoundException
+    Controller --> Client : 404 Not Found
+  else ユーザーが存在する
+    UserRepo --> AppService : User
+
+    AppService -> ULRepo : findByUserIdAndLessonId(userId, lessonId)
+    ULRepo -> DB : SELECT FROM user_lessons
+    DB --> ULRepo : Optional<UserLesson>
+
+    alt UserLessonが存在しない（初めて完了）
+      ULRepo --> AppService : empty
+      AppService -> ULRepo : save(UserLesson.create(userId, lessonId))
+      ULRepo -> DB : INSERT INTO user_lessons
+      DB --> ULRepo : ok
+    else UserLessonが既に存在する（updatedAtの更新）
+      ULRepo --> AppService : UserLesson
+      AppService -> ULRepo : save(userLesson.update())
+      ULRepo -> DB : UPDATE user_lessons SET updatedAt = NOW()
+      DB --> ULRepo : ok
+    end
+
+    AppService --> Controller : void
+    Controller --> Client : 200 OK
+  end
+end
+
+' ============================================================
+' レッスン完了状態更新：未完了にする
+' ============================================================
+== レッスン完了状態更新（未完了） ==
+
+Client -> Controller : PUT .../completion\n{ isLessonCompleted: false }
+
+Controller -> AppService : updateUserLesson(courseId, lessonGroupId, command)
+
+AppService -> LRepo : findById(lessonId)
+LRepo -> DB : SELECT FROM lessons
+DB --> LRepo : Optional<Lesson>
+
+alt レッスンが存在しない、または courseId・lessonGroupId が不一致
+  AppService --> Controller : ResourceNotFoundException
+  Controller --> Client : 404 Not Found
+else レッスンがパスと一致する
+  LRepo --> AppService : Lesson
+
+  AppService -> UserRepo : findUserById(userId)
+  UserRepo -> DB : SELECT FROM users WHERE id = ?
+  DB --> UserRepo : Optional<User>
+
+  alt ユーザーが存在しない
+    AppService --> Controller : ResourceNotFoundException
+    Controller --> Client : 404 Not Found
+  else ユーザーが存在する
+    UserRepo --> AppService : User
+
+    AppService -> ULRepo : deleteByUserIdAndLessonId(userId, lessonId)
+    ULRepo -> DB : DELETE FROM user_lessons\nWHERE userId = ? AND lessonId = ?
+    DB --> ULRepo : ok
+
+    note over AppService
+      レコードが存在しなくても正常終了（冪等性）
+    end note
+
+    AppService --> Controller : void
+    Controller --> Client : 200 OK
+  end
+end
+
+@enduml

@@ -1,0 +1,102 @@
+buildscript {
+    dependencies {
+        classpath("org.flywaydb:flyway-database-postgresql:11.7.2")
+    }
+}
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.8'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id "org.flywaydb.flyway" version "11.7.2"
+    id 'com.diffplug.spotless' version '6.21.0'
+}
+
+spotless {
+    java {
+        target 'src/main/java/**/*.java', 'src/test/java/**/*.java'
+        googleJavaFormat('1.22.0')
+        removeUnusedImports()
+        formatAnnotations()
+    }
+}
+
+group = 'com.everrefine.elms'
+version = '0.0.1-SNAPSHOT'
+
+ext {
+    set('testcontainers.version', '1.21.4')
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // SpringBoot
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jdbc'
+    implementation 'org.springframework.boot:spring-boot-starter-mail'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // コメントアウトなし→パスワード生成される。起動に成功する。コメントアウトあり→起動に成功する。
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // DB, Flyway
+    runtimeOnly 'org.postgresql:postgresql'
+    implementation 'org.flywaydb:flyway-core:11.7.2'
+    runtimeOnly 'org.flywaydb:flyway-database-postgresql:11.7.2'
+    // https://qiita.com/wb773/items/ca85cf05c90c3037ed25
+
+    // JWT
+    implementation 'io.jsonwebtoken:jjwt-api:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.11.5' // JacksonでJSONパース
+
+    // パスワードエンコーディング（BCrypt）
+    implementation 'org.springframework.security:spring-security-crypto'
+
+    // テスト
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.security:spring-security-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation("org.flywaydb:flyway-core")
+
+    // Testcontainers
+    testImplementation("org.springframework.boot:spring-boot-testcontainers")
+    testImplementation("org.testcontainers:junit-jupiter")
+    testImplementation("org.testcontainers:postgresql")
+
+    // OpenCSV
+    testImplementation 'com.opencsv:opencsv:5.5.2'
+
+    // AWS SDK v2
+    implementation platform("software.amazon.awssdk:bom:2.31.78")
+    implementation "software.amazon.awssdk:s3"
+
+    // Swagger (springdoc-openapi)
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.6'
+
+    // ArchUnit
+    testImplementation 'com.tngtech.archunit:archunit-junit5:1.3.0'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
