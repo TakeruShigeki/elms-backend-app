@@ -174,6 +174,38 @@ public class TestDataFactory {
   }
 
   /**
+   * レッスンにタグを付与する。タグ名が未登録の場合は {@code tags} にも登録する。
+   *
+   * <p>タグ名は全レッスンで共有するマスタのため、他のレッスンが既に使っているタグ名はそのまま使い回す。
+   *
+   * @param lessonId レッスンID
+   * @param tagName タグ名
+   * @return 付与したタグのタグID
+   */
+  public UUID createLessonTag(UUID lessonId, String tagName) {
+    jdbcTemplate.update(
+        """
+            INSERT INTO tags (name)
+            VALUES (?)
+            ON CONFLICT (name) DO NOTHING
+            """,
+        tagName);
+
+    UUID tagId =
+        jdbcTemplate.queryForObject("SELECT id FROM tags WHERE name = ?", UUID.class, tagName);
+
+    jdbcTemplate.update(
+        """
+            INSERT INTO lesson_tags (lesson_id, tag_id)
+            VALUES (?, ?)
+            """,
+        lessonId,
+        tagId);
+
+    return tagId;
+  }
+
+  /**
    * ユーザーのレッスン受講状況を作成する。
    *
    * @param userId ユーザーID

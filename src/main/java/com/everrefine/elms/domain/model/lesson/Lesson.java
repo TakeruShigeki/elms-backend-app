@@ -1,8 +1,10 @@
 package com.everrefine.elms.domain.model.lesson;
 
 import com.everrefine.elms.domain.model.Order;
+import com.everrefine.elms.domain.model.tag.Tag;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.lang.Nullable;
 
@@ -15,6 +17,7 @@ public record Lesson(
     LessonTitle title,
     @Nullable LessonContent content,
     @Nullable VideoUrl videoUrl,
+    List<Tag> tags,
     LocalDateTime createdAt,
     LocalDateTime updatedAt) {
 
@@ -44,6 +47,7 @@ public record Lesson(
         new LessonTitle(title),
         content == null ? null : new LessonContent(content),
         videoUrl == null ? null : new VideoUrl(videoUrl),
+        List.of(),
         LocalDateTime.now(),
         LocalDateTime.now());
   }
@@ -59,7 +63,16 @@ public record Lesson(
    */
   public Lesson withId(UUID id) {
     return new Lesson(
-        id, lessonGroupId, courseId, lessonOrder, title, content, videoUrl, createdAt, updatedAt);
+        id,
+        lessonGroupId,
+        courseId,
+        lessonOrder,
+        title,
+        content,
+        videoUrl,
+        tags,
+        createdAt,
+        updatedAt);
   }
 
   /**
@@ -68,9 +81,10 @@ public record Lesson(
    * @param title レッスンタイトル
    * @param content レッスンの本文
    * @param videoUrl レッスンの動画URL
+   * @param tags タグ名のリスト（{@code null} の場合はタグなし）
    * @return 更新用のレッスン
    */
-  public Lesson update(String title, String content, String videoUrl) {
+  public Lesson update(String title, String content, String videoUrl, List<String> tags) {
     return new Lesson(
         this.id,
         this.lessonGroupId,
@@ -79,6 +93,9 @@ public record Lesson(
         title == null ? this.title : new LessonTitle(title),
         content == null ? this.content : new LessonContent(content),
         videoUrl == null ? this.videoUrl : new VideoUrl(videoUrl),
+        tags == null
+            ? List.of()
+            : tags.stream().map(name -> new Tag(null, name)).distinct().toList(),
         this.createdAt,
         LocalDateTime.now());
   }
@@ -98,6 +115,7 @@ public record Lesson(
         this.title,
         this.content,
         this.videoUrl,
+        this.tags,
         this.createdAt,
         LocalDateTime.now());
   }

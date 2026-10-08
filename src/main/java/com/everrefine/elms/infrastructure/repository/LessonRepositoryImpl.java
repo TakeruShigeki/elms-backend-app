@@ -4,17 +4,23 @@ import com.everrefine.elms.domain.model.lesson.Lesson;
 import com.everrefine.elms.domain.model.lesson.LessonGroupWithLessons;
 import com.everrefine.elms.domain.model.lesson.LessonSearchCriteria;
 import com.everrefine.elms.domain.model.lesson.LessonWithCourseAndLessonGroup;
+import com.everrefine.elms.domain.model.tag.Tag;
 import com.everrefine.elms.domain.repository.LessonRepository;
 import com.everrefine.elms.infrastructure.dao.LessonDao;
 import com.everrefine.elms.infrastructure.dao.LessonGroupDao;
+import com.everrefine.elms.infrastructure.dao.LessonTagDao;
+import com.everrefine.elms.infrastructure.dao.TagDao;
 import com.everrefine.elms.infrastructure.entity.lesson.LessonEntity;
+import com.everrefine.elms.infrastructure.entity.tag.TagEntity;
 import com.everrefine.elms.infrastructure.row.LessonGroupWithLessonRow;
 import com.everrefine.elms.infrastructure.row.LessonWithCourseAndLessonGroupRow;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import lombok.AllArgsConstructor;
 import org.springframework.data.jdbc.core.JdbcAggregateTemplate;
 import org.springframework.stereotype.Repository;
@@ -26,6 +32,8 @@ public class LessonRepositoryImpl implements LessonRepository {
 
   private final LessonDao lessonDao;
   private final LessonGroupDao lessonGroupDao;
+  private final TagDao tagDao;
+  private final LessonTagDao lessonTagDao;
   private final JdbcAggregateTemplate jdbcAggregateTemplate;
 
   @Override
@@ -112,7 +120,41 @@ public class LessonRepositoryImpl implements LessonRepository {
 
   @Override
   public Lesson updateLesson(Lesson lesson) {
-    return lessonDao.save(LessonEntity.from(lesson)).toDomain();
+    LessonEntity saved = lessonDao.save(LessonEntity.from(lesson));
+    List<Tag> savedTags = replaceTags(lesson.id(), lesson.tags());
+    return saved.toDomain(savedTags);
+  }
+
+  /**
+   * レッスンのタグを洗い替えする。
+   *
+   * <p>本APIは部分更新を行わないため、既存の紐付けを全削除してから渡されたタグを登録する。空リストの場合は削除のみ行い、 すべてのタグが外れる。
+   *
+   * <p>タグ名は全レッスンで共有するマスタなので、{@code tags} への登録は「無ければ作る」とし、そのあとタグ名からIDを 引き直して {@code lesson_tags}
+   * に紐付ける。{@code createIfAbsent} はIDを返さないため、{@code findByNameIn} で 引き直す2段構えになっている。
+   *
+   * @param lessonId レッスンID
+   * @param tags 登録するタグのリスト（トリム・重複排除済み。IDは未採番）
+   * @return 登録したタグのリスト（DBが採番したIDを含む）
+   */
+  private List<Tag> replaceTags(UUID lessonId, List<Tag> tags) {
+    lessonTagDao.deleteByLessonId(lessonId);
+
+    if (tags.isEmpty()) {
+      return List.of();
+    }
+
+    List<String> names = tags.stream().map(Tag::name).toList();
+
+    names.forEach(tagDao::createIfAbsent);
+
+    Map<String, TagEntity> tagByName =
+        tagDao.findByNameIn(names).stream()
+            .collect(Collectors.toMap(TagEntity::name, tagEntity -> tagEntity));
+
+    names.forEach(name -> lessonTagDao.create(lessonId, tagByName.get(name).id()));
+
+    return names.stream().map(name -> tagByName.get(name).toDomain()).toList();
   }
 
   @Override

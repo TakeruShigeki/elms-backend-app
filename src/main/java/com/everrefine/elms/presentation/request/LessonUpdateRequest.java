@@ -2,8 +2,11 @@ package com.everrefine.elms.presentation.request;
 
 import com.everrefine.elms.application.command.LessonUpdateCommand;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import java.util.List;
 import java.util.UUID;
 
 /** レッスン更新リクエスト。 */
@@ -17,7 +20,12 @@ public record LessonUpdateRequest(
         String content,
     @Schema(description = "動画URL（2048文字以内）", example = "https://example.com/videos/lesson1.mp4")
         @Size(max = 2048, message = "動画URLは2048文字以内で入力してください")
-        String videoUrl) {
+        String videoUrl,
+    @Schema(
+            description = "タグのリスト（50個以内）。未指定・null・空配列の場合は既存のタグをすべて外す",
+            example = "[{\"name\": \"Java\"}, {\"name\": \"Spring Boot\"}]")
+        @Size(max = 50, message = "タグは50個以内で設定してください")
+        List<@NotNull(message = "タグ名は必須です") @Valid TagRequest> tags) {
 
   /**
    * Commandオブジェクトに変換する。
@@ -26,6 +34,11 @@ public record LessonUpdateRequest(
    * @return レッスン更新Command
    */
   public LessonUpdateCommand toCommand(UUID lessonId) {
-    return new LessonUpdateCommand(lessonId, title, content, videoUrl);
+    return new LessonUpdateCommand(
+        lessonId,
+        title,
+        content,
+        videoUrl,
+        tags == null ? null : tags.stream().map(TagRequest::name).toList());
   }
 }
