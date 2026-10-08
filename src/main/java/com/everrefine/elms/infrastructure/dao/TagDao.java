@@ -38,11 +38,5 @@ public interface TagDao extends CrudRepository<TagEntity, UUID> {
    * @param names タグ名のリスト
    * @return タグ一覧
    */
-  @Query(
-      """
-          SELECT *
-          FROM tags
-          WHERE name IN (:names)
-          """)
-  List<TagEntity> findByNameIn(@Param("names") List<String> names);
+  List<TagEntity> findByNameIn(List<String> names);
 }

@@ -11,6 +11,7 @@ import com.everrefine.elms.infrastructure.dao.LessonGroupDao;
 import com.everrefine.elms.infrastructure.dao.LessonTagDao;
 import com.everrefine.elms.infrastructure.dao.TagDao;
 import com.everrefine.elms.infrastructure.entity.lesson.LessonEntity;
+import com.everrefine.elms.infrastructure.entity.tag.LessonTagEntity;
 import com.everrefine.elms.infrastructure.entity.tag.TagEntity;
 import com.everrefine.elms.infrastructure.row.LessonGroupWithLessonRow;
 import com.everrefine.elms.infrastructure.row.LessonWithCourseAndLessonGroupRow;
@@ -128,10 +129,16 @@ public class LessonRepositoryImpl implements LessonRepository {
   /**
    * レッスンのタグを洗い替えする。
    *
-   * <p>本APIは部分更新を行わないため、既存の紐付けを全削除してから渡されたタグを登録する。空リストの場合は削除のみ行い、 すべてのタグが外れる。
+   * <p>本APIは部分更新を行わないため、既存の紐付けを全削除してから渡されたタグを登録する。空リストの場合は削除のみ行い、すべてのタグが外れる。
    *
-   * <p>タグ名は全レッスンで共有するマスタなので、{@code tags} への登録は「無ければ作る」とし、そのあとタグ名からIDを 引き直して {@code lesson_tags}
-   * に紐付ける。{@code createIfAbsent} はIDを返さないため、{@code findByNameIn} で 引き直す2段構えになっている。
+   * <p>タグ名は全レッスンで共有するマスタなので、{@code tags} への登録は「無ければ作る」とし、そのあとタグ名からIDを引き直して {@code lesson_tags}
+   * に紐付ける。{@code createIfAbsent} はIDを返さないため、{@code findByNameIn} で引き直す2段構えになっている。
+   *
+   * <p>{@code createIfAbsent} はタグ名をソートした順に呼ぶ。未登録の同じタグを2つのリクエストが逆の順番（{@code ["A", "B"]} と {@code
+   * ["B", "A"]}）でINSERTすると、一意制約の確認でお互いのトランザクションの完了を待ち合ってデッドロックになるため、どのリクエストでも同じ順番でINSERTするよう揃える。
+   *
+   * <p>{@code lesson_tags} への登録は、{@link #createLessons} と同じくIDをアプリケーション側で採番してから {@code insertAll}
+   * でまとめて登録する。IDが確定していると、JDBCドライバの {@code reWriteBatchedInserts} が複数レコードを1つのINSERT文にまとめられる。
    *
    * @param lessonId レッスンID
    * @param tags 登録するタグのリスト（トリム・重複排除済み。IDは未採番）
@@ -146,13 +153,18 @@ public class LessonRepositoryImpl implements LessonRepository {
 
     List<String> names = tags.stream().map(Tag::name).toList();
 
-    names.forEach(tagDao::createIfAbsent);
+    names.stream().sorted().forEach(tagDao::createIfAbsent);
 
     Map<String, TagEntity> tagByName =
         tagDao.findByNameIn(names).stream()
             .collect(Collectors.toMap(TagEntity::name, tagEntity -> tagEntity));
 
-    names.forEach(name -> lessonTagDao.create(lessonId, tagByName.get(name).id()));
+    jdbcAggregateTemplate.insertAll(
+        names.stream()
+            .map(
+                name ->
+                    new LessonTagEntity(UUID.randomUUID(), lessonId, tagByName.get(name).id()))
+            .toList());
 
     return names.stream().map(name -> tagByName.get(name).toDomain()).toList();
   }

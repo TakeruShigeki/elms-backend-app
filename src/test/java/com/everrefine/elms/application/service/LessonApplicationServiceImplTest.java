@@ -569,6 +569,119 @@ public class LessonApplicationServiceImplTest {
     }
 
     @Test
+    void タグに空配列を渡すとタグの紐付けがすべて外れる() {
+      // Arrange - タグを2つ持つレッスンを準備（IDは自動生成）
+      UUID courseId = testData.createCourse(new BigDecimal("1"), "テストコース", "コース説明");
+      UUID lessonGroupId = testData.createLessonGroup(courseId, new BigDecimal("1"), "テストグループ");
+      UUID lessonId =
+          testData.createLesson(
+              lessonGroupId, courseId, new BigDecimal("1"), "元のタイトル", "元の説明", null);
+      testData.createLessonTag(lessonId, "元のタグ1");
+      testData.createLessonTag(lessonId, "元のタグ2");
+
+      LessonUpdateRequest request = new LessonUpdateRequest("元のタイトル", "元の説明", null, List.of());
+      LessonUpdateCommand command = request.toCommand(lessonId);
+
+      // Act
+      LessonDto result = lessonApplicationService.updateLesson(command);
+
+      // Assert - 空配列を渡すとすべてのタグが外れる
+      assertTrue(result.tags().isEmpty());
+
+      // DBから該当レッスンの紐付けがすべて削除されていることを確認
+      Integer lessonTagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM lesson_tags WHERE lesson_id = ?", Integer.class, lessonId);
+      assertEquals(0, lessonTagCount);
+
+      // タグマスタは全レッスンで共有するため、紐付けが外れても削除されないことを確認
+      Integer tagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM tags WHERE name IN ('元のタグ1', '元のタグ2')", Integer.class);
+      assertEquals(2, tagCount);
+    }
+
+    @Test
+    void 前後の空白を除去すると同じになるタグ名は1つにまとめて登録される() {
+      // Arrange - タグなしのレッスンを準備（IDは自動生成）
+      UUID courseId = testData.createCourse(new BigDecimal("1"), "テストコース", "コース説明");
+      UUID lessonGroupId = testData.createLessonGroup(courseId, new BigDecimal("1"), "テストグループ");
+      UUID lessonId =
+          testData.createLesson(
+              lessonGroupId, courseId, new BigDecimal("1"), "元のタイトル", "元の説明", null);
+
+      // 2つ目は先頭が半角スペース、末尾が全角スペース（U+3000）
+      LessonUpdateRequest request =
+          new LessonUpdateRequest(
+              "元のタイトル",
+              "元の説明",
+              null,
+              List.of(new TagRequest("Java"), new TagRequest(" Java\u3000")));
+      LessonUpdateCommand command = request.toCommand(lessonId);
+
+      // Act
+      LessonDto result = lessonApplicationService.updateLesson(command);
+
+      // Assert - 空白を除去したうえで重複が1つにまとめられる
+      assertEquals(List.of("Java"), result.tags().stream().map(TagDto::name).toList());
+
+      // tagsテーブルには空白を除去した「Java」だけが登録されていることを確認
+      List<String> tagNames =
+          jdbcTemplate.queryForList(
+              "SELECT name FROM tags WHERE name LIKE '%Java%'", String.class);
+      assertEquals(List.of("Java"), tagNames);
+
+      // lesson_tagsテーブルの該当レッスンの紐付けが1件であることを確認
+      Integer lessonTagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM lesson_tags WHERE lesson_id = ?", Integer.class, lessonId);
+      assertEquals(1, lessonTagCount);
+    }
+
+    @Test
+    void 大文字と小文字だけが異なるタグ名は別のタグとして登録される() {
+      // Arrange - タグなしのレッスンを準備（IDは自動生成）
+      UUID courseId = testData.createCourse(new BigDecimal("1"), "テストコース", "コース説明");
+      UUID lessonGroupId = testData.createLessonGroup(courseId, new BigDecimal("1"), "テストグループ");
+      UUID lessonId =
+          testData.createLesson(
+              lessonGroupId, courseId, new BigDecimal("1"), "元のタイトル", "元の説明", null);
+
+      LessonUpdateRequest request =
+          new LessonUpdateRequest(
+              "元のタイトル",
+              "元の説明",
+              null,
+              List.of(new TagRequest("Java"), new TagRequest("java")));
+      LessonUpdateCommand command = request.toCommand(lessonId);
+
+      // Act
+      LessonDto result = lessonApplicationService.updateLesson(command);
+
+      // Assert - 大文字・小文字は区別され、別のタグとして扱われる
+      assertEquals(List.of("Java", "java"), result.tags().stream().map(TagDto::name).toList());
+
+      // tagsテーブルに「Java」と「java」が別々に登録されていることを確認
+      // ORDER BYの結果がDBの照合順序に左右されないよう、文字コード順（COLLATE "C"）で並べる
+      List<String> tagNames =
+          jdbcTemplate.queryForList(
+              """
+                  SELECT name
+                  FROM tags
+                  WHERE LOWER(name) = 'java'
+                  ORDER BY name COLLATE "C"
+                  """,
+              String.class);
+      assertEquals(List.of("Java", "java"), tagNames);
+
+      // lesson_tagsテーブルの該当レッスンの紐付けが2件であることを確認
+      Integer lessonTagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM lesson_tags WHERE lesson_id = ?", Integer.class, lessonId);
+      assertEquals(2, lessonTagCount);
+    }
+
+    @Test
     void 同じタグ名を複数のレッスンで共有できる() {
       // Arrange - 別コースのレッスンを2つ準備（IDは自動生成）
       UUID courseId1 = testData.createCourse(new BigDecimal("1"), "タグ共有コース1", "コース説明");
