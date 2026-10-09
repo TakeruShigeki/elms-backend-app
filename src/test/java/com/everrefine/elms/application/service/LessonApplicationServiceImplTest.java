@@ -15,6 +15,7 @@ import com.everrefine.elms.application.dto.CourseLessonsDto;
 import com.everrefine.elms.application.dto.LessonDto;
 import com.everrefine.elms.application.dto.LessonImportResponseDto;
 import com.everrefine.elms.application.dto.LessonPageDto;
+import com.everrefine.elms.application.dto.TagDto;
 import com.everrefine.elms.application.exception.BadRequestException;
 import com.everrefine.elms.application.exception.ResourceNotFoundException;
 import com.everrefine.elms.domain.model.lesson.Lesson;
@@ -23,6 +24,7 @@ import com.everrefine.elms.presentation.request.LessonCreateRequest;
 import com.everrefine.elms.presentation.request.LessonOrderUpdateRequest;
 import com.everrefine.elms.presentation.request.LessonSearchRequest;
 import com.everrefine.elms.presentation.request.LessonUpdateRequest;
+import com.everrefine.elms.presentation.request.TagRequest;
 import com.everrefine.elms.testsupport.TestDataFactory;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -484,9 +486,14 @@ public class LessonApplicationServiceImplTest {
               "元のタイトル",
               "元の説明",
               "https://example.com/old-video.mp4");
+      testData.createLessonTag(lessonId, "元のタグ名");
 
       LessonUpdateRequest request =
-          new LessonUpdateRequest("更新後タイトル", "更新後説明", "https://example.com/updated-video.mp4");
+          new LessonUpdateRequest(
+              "更新後タイトル",
+              "更新後説明",
+              "https://example.com/updated-video.mp4",
+              List.of(new TagRequest("更新後タグ名")));
       LessonUpdateCommand command = request.toCommand(lessonId);
 
       // Act
@@ -498,6 +505,7 @@ public class LessonApplicationServiceImplTest {
       assertEquals("更新後タイトル", result.title());
       assertEquals("更新後説明", result.content());
       assertEquals("https://example.com/updated-video.mp4", result.videoUrl());
+      assertEquals(List.of("更新後タグ名"), result.tags().stream().map(TagDto::name).toList());
 
       // DBが更新されていることを確認
       String updatedTitle =
@@ -508,6 +516,18 @@ public class LessonApplicationServiceImplTest {
           jdbcTemplate.queryForObject(
               "SELECT content FROM lessons WHERE id = ?", String.class, lessonId);
       assertEquals("更新後説明", updatedContent);
+      List<String> updatedTags =
+          jdbcTemplate.queryForList(
+              """
+                  SELECT t.name
+                  FROM lesson_tags lt
+                  INNER JOIN tags t ON t.id = lt.tag_id
+                  WHERE lt.lesson_id = ?
+                  ORDER BY t.name
+                  """,
+              String.class,
+              lessonId);
+      assertEquals(List.of("更新後タグ名"), updatedTags);
     }
 
     @Test
@@ -523,9 +543,10 @@ public class LessonApplicationServiceImplTest {
               "元のタイトル",
               "元の説明",
               "https://example.com/old-video.mp4");
+      testData.createLessonTag(lessonId, "元のタグ名");
 
-      // nullを渡すと元の値が保持される仕様
-      LessonUpdateRequest request = new LessonUpdateRequest("タイトルのみ更新", null, null);
+      // レッスン本文・動画URLはnullを渡すと元の値が保持され、タグはすべて外れる仕様
+      LessonUpdateRequest request = new LessonUpdateRequest("タイトルのみ更新", null, null, null);
       LessonUpdateCommand command = request.toCommand(lessonId);
 
       // Act
@@ -536,13 +557,178 @@ public class LessonApplicationServiceImplTest {
       assertEquals("タイトルのみ更新", result.title());
       assertEquals("元の説明", result.content()); // 元の値が保持される
       assertEquals("https://example.com/old-video.mp4", result.videoUrl()); // 元の値が保持される
+
+      // Assert - タグは部分更新を行わないため、nullを渡すとすべて外れる
+      assertTrue(result.tags().isEmpty());
+
+      // DBから紐付けが削除されていることを確認
+      Integer lessonTagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM lesson_tags WHERE lesson_id = ?", Integer.class, lessonId);
+      assertEquals(0, lessonTagCount);
+    }
+
+    @Test
+    void タグに空配列を渡すとタグの紐付けがすべて外れる() {
+      // Arrange - タグを2つ持つレッスンを準備（IDは自動生成）
+      UUID courseId = testData.createCourse(new BigDecimal("1"), "テストコース", "コース説明");
+      UUID lessonGroupId = testData.createLessonGroup(courseId, new BigDecimal("1"), "テストグループ");
+      UUID lessonId =
+          testData.createLesson(
+              lessonGroupId, courseId, new BigDecimal("1"), "元のタイトル", "元の説明", null);
+      testData.createLessonTag(lessonId, "元のタグ1");
+      testData.createLessonTag(lessonId, "元のタグ2");
+
+      LessonUpdateRequest request = new LessonUpdateRequest("元のタイトル", "元の説明", null, List.of());
+      LessonUpdateCommand command = request.toCommand(lessonId);
+
+      // Act
+      LessonDto result = lessonApplicationService.updateLesson(command);
+
+      // Assert - 空配列を渡すとすべてのタグが外れる
+      assertTrue(result.tags().isEmpty());
+
+      // DBから該当レッスンの紐付けがすべて削除されていることを確認
+      Integer lessonTagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM lesson_tags WHERE lesson_id = ?", Integer.class, lessonId);
+      assertEquals(0, lessonTagCount);
+
+      // タグマスタは全レッスンで共有するため、紐付けが外れても削除されないことを確認
+      Integer tagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM tags WHERE name IN ('元のタグ1', '元のタグ2')", Integer.class);
+      assertEquals(2, tagCount);
+    }
+
+    @Test
+    void 前後の空白を除去すると同じになるタグ名は1つにまとめて登録される() {
+      // Arrange - タグなしのレッスンを準備（IDは自動生成）
+      UUID courseId = testData.createCourse(new BigDecimal("1"), "テストコース", "コース説明");
+      UUID lessonGroupId = testData.createLessonGroup(courseId, new BigDecimal("1"), "テストグループ");
+      UUID lessonId =
+          testData.createLesson(
+              lessonGroupId, courseId, new BigDecimal("1"), "元のタイトル", "元の説明", null);
+
+      // 2つ目は先頭が半角スペース、末尾が全角スペース（U+3000）
+      LessonUpdateRequest request =
+          new LessonUpdateRequest(
+              "元のタイトル",
+              "元の説明",
+              null,
+              List.of(new TagRequest("Java"), new TagRequest(" Java\u3000")));
+      LessonUpdateCommand command = request.toCommand(lessonId);
+
+      // Act
+      LessonDto result = lessonApplicationService.updateLesson(command);
+
+      // Assert - 空白を除去したうえで重複が1つにまとめられる
+      assertEquals(List.of("Java"), result.tags().stream().map(TagDto::name).toList());
+
+      // tagsテーブルには空白を除去した「Java」だけが登録されていることを確認
+      List<String> tagNames =
+          jdbcTemplate.queryForList(
+              "SELECT name FROM tags WHERE name LIKE '%Java%'", String.class);
+      assertEquals(List.of("Java"), tagNames);
+
+      // lesson_tagsテーブルの該当レッスンの紐付けが1件であることを確認
+      Integer lessonTagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM lesson_tags WHERE lesson_id = ?", Integer.class, lessonId);
+      assertEquals(1, lessonTagCount);
+    }
+
+    @Test
+    void 大文字と小文字だけが異なるタグ名は別のタグとして登録される() {
+      // Arrange - タグなしのレッスンを準備（IDは自動生成）
+      UUID courseId = testData.createCourse(new BigDecimal("1"), "テストコース", "コース説明");
+      UUID lessonGroupId = testData.createLessonGroup(courseId, new BigDecimal("1"), "テストグループ");
+      UUID lessonId =
+          testData.createLesson(
+              lessonGroupId, courseId, new BigDecimal("1"), "元のタイトル", "元の説明", null);
+
+      LessonUpdateRequest request =
+          new LessonUpdateRequest(
+              "元のタイトル",
+              "元の説明",
+              null,
+              List.of(new TagRequest("Java"), new TagRequest("java")));
+      LessonUpdateCommand command = request.toCommand(lessonId);
+
+      // Act
+      LessonDto result = lessonApplicationService.updateLesson(command);
+
+      // Assert - 大文字・小文字は区別され、別のタグとして扱われる
+      assertEquals(List.of("Java", "java"), result.tags().stream().map(TagDto::name).toList());
+
+      // tagsテーブルに「Java」と「java」が別々に登録されていることを確認
+      // ORDER BYの結果がDBの照合順序に左右されないよう、文字コード順（COLLATE "C"）で並べる
+      List<String> tagNames =
+          jdbcTemplate.queryForList(
+              """
+                  SELECT name
+                  FROM tags
+                  WHERE LOWER(name) = 'java'
+                  ORDER BY name COLLATE "C"
+                  """,
+              String.class);
+      assertEquals(List.of("Java", "java"), tagNames);
+
+      // lesson_tagsテーブルの該当レッスンの紐付けが2件であることを確認
+      Integer lessonTagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM lesson_tags WHERE lesson_id = ?", Integer.class, lessonId);
+      assertEquals(2, lessonTagCount);
+    }
+
+    @Test
+    void 同じタグ名を複数のレッスンで共有できる() {
+      // Arrange - 別コースのレッスンを2つ準備（IDは自動生成）
+      UUID courseId1 = testData.createCourse(new BigDecimal("1"), "タグ共有コース1", "コース説明");
+      UUID lessonGroupId1 = testData.createLessonGroup(courseId1, new BigDecimal("1"), "タグ共有グループ1");
+      UUID lessonId1 =
+          testData.createLesson(
+              lessonGroupId1, courseId1, new BigDecimal("1"), "タグ共有レッスン1", "本文", null);
+
+      UUID courseId2 = testData.createCourse(new BigDecimal("2"), "タグ共有コース2", "コース説明");
+      UUID lessonGroupId2 = testData.createLessonGroup(courseId2, new BigDecimal("1"), "タグ共有グループ2");
+      UUID lessonId2 =
+          testData.createLesson(
+              lessonGroupId2, courseId2, new BigDecimal("1"), "タグ共有レッスン2", "本文", null);
+
+      // Act - 両方のレッスンに同じタグ名を設定する
+      lessonApplicationService.updateLesson(
+          new LessonUpdateRequest("タグ共有レッスン1", "本文", null, List.of(new TagRequest("タグ1")))
+              .toCommand(lessonId1));
+      lessonApplicationService.updateLesson(
+          new LessonUpdateRequest("タグ共有レッスン2", "本文", null, List.of(new TagRequest("タグ1")))
+              .toCommand(lessonId2));
+
+      // Assert - タグマスタは1行のみ（既存のタグ名は使い回される）
+      Integer tagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM tags WHERE name = 'タグ1'", Integer.class);
+      assertEquals(1, tagCount);
+
+      // Assert - 両レッスンが同じタグIDを参照していることを確認
+      Integer sharedTagIdCount =
+          jdbcTemplate.queryForObject(
+              """
+                  SELECT COUNT(DISTINCT tag_id)
+                  FROM lesson_tags
+                  WHERE lesson_id IN (?, ?)
+                  """,
+              Integer.class,
+              lessonId1,
+              lessonId2);
+      assertEquals(1, sharedTagIdCount);
     }
 
     @Test
     void 存在しないレッスンを更新するとResourceNotFoundExceptionを投げる() {
       // Arrange
       LessonUpdateRequest request =
-          new LessonUpdateRequest("存在しないレッスン", "説明", "https://example.com/video.mp4");
+          new LessonUpdateRequest("存在しないレッスン", "説明", "https://example.com/video.mp4", null);
       UUID nonExistentId = UUID.randomUUID();
       LessonUpdateCommand command = request.toCommand(nonExistentId);
 
@@ -579,6 +765,43 @@ public class LessonApplicationServiceImplTest {
           jdbcTemplate.queryForObject(
               "SELECT COUNT(*) FROM lessons WHERE id = ?", Integer.class, lessonId);
       assertEquals(0, count);
+    }
+
+    @Test
+    void タグ付きのレッスンを削除するとタグの紐付けも削除される() {
+      // Arrange - タグ付きの削除対象レッスンを準備（IDは自動生成）
+      UUID courseId = testData.createCourse(new BigDecimal("1"), "テストコース", "コース説明");
+      UUID lessonGroupId = testData.createLessonGroup(courseId, new BigDecimal("1"), "テストグループ");
+      UUID lessonId =
+          testData.createLesson(
+              lessonGroupId,
+              courseId,
+              new BigDecimal("1"),
+              "削除対象レッスン",
+              "説明",
+              "https://example.com/video.mp4");
+      testData.createLessonTag(lessonId, "削除対象タグ");
+
+      // Act
+      lessonApplicationService.deleteLessonById(lessonId);
+
+      // Assert - レッスンが削除されていることを確認
+      Integer lessonCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM lessons WHERE id = ?", Integer.class, lessonId);
+      assertEquals(0, lessonCount);
+
+      // Assert - タグの紐付けも削除されていることを確認
+      Integer lessonTagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM lesson_tags WHERE lesson_id = ?", Integer.class, lessonId);
+      assertEquals(0, lessonTagCount);
+
+      // Assert - タグマスタは残ることを確認（他のレッスンが使う可能性があるため）
+      Integer tagCount =
+          jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM tags WHERE name = ?", Integer.class, "削除対象タグ");
+      assertEquals(1, tagCount);
     }
 
     @Test

@@ -1,10 +1,12 @@
 package com.everrefine.elms.application.command;
 
 import com.everrefine.elms.domain.model.lesson.Lesson;
+import java.util.List;
 import java.util.UUID;
 
 /** レッスン更新用のコマンド。 */
-public record LessonUpdateCommand(UUID id, String title, String content, String videoUrl) {
+public record LessonUpdateCommand(
+    UUID id, String title, String content, String videoUrl, List<String> tags) {
 
   /**
    * Lessonエンティティに変換する。
@@ -13,6 +15,6 @@ public record LessonUpdateCommand(UUID id, String title, String content, String 
    * @return 更新後のレッスンエンティティ
    */
   public Lesson toLesson(Lesson lesson) {
-    return lesson.update(title, content, videoUrl);
+    return lesson.update(title, content, videoUrl, tags);
   }
 }

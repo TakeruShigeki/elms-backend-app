@@ -5,8 +5,10 @@ import com.everrefine.elms.domain.model.lesson.Lesson;
 import com.everrefine.elms.domain.model.lesson.LessonContent;
 import com.everrefine.elms.domain.model.lesson.LessonTitle;
 import com.everrefine.elms.domain.model.lesson.VideoUrl;
+import com.everrefine.elms.domain.model.tag.Tag;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.relational.core.mapping.Table;
@@ -47,9 +49,22 @@ public record LessonEntity(
   /**
    * ドメインモデルに変換する。
    *
-   * @return レッスンのドメインモデル
+   * <p>タグは {@code lessons} テーブルではなく {@code lesson_tags} と {@code tags} が持つため、この行からは復元できない。
+   * タグなしのレッスンとして変換する。タグを含めるには {@link #toDomain(List)} を使う。
+   *
+   * @return レッスンのドメインモデル（タグなし）
    */
   public Lesson toDomain() {
+    return toDomain(List.of());
+  }
+
+  /**
+   * タグを指定してドメインモデルに変換する。
+   *
+   * @param tags タグのリスト
+   * @return レッスンのドメインモデル
+   */
+  public Lesson toDomain(List<Tag> tags) {
     return new Lesson(
         id,
         lessonGroupId,
@@ -58,6 +73,7 @@ public record LessonEntity(
         new LessonTitle(title),
         content != null ? new LessonContent(content) : null,
         videoUrl != null ? new VideoUrl(videoUrl) : null,
+        tags,
         createdAt,
         updatedAt);
   }

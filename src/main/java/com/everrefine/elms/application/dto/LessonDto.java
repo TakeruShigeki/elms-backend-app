@@ -6,6 +6,7 @@ import com.everrefine.elms.domain.model.lesson.LessonInGroup;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /** レッスンのDTO。 */
@@ -19,6 +20,7 @@ public record LessonDto(
         String content,
     @Schema(description = "動画URL", example = "https://example.com/videos/lesson1.mp4")
         String videoUrl,
+    @Schema(description = "タグのリスト") List<TagDto> tags,
     @Schema(description = "登録日時", example = "2024-01-01T09:00:00") LocalDateTime createdAt,
     @Schema(description = "更新日時", example = "2024-06-01T10:30:00") LocalDateTime updatedAt) {
 
@@ -37,6 +39,7 @@ public record LessonDto(
         lesson.title().value(),
         lesson.content() != null ? lesson.content().value() : null,
         lesson.videoUrl() != null ? lesson.videoUrl().value() : null,
+        lesson.tags().stream().map(TagDto::from).toList(),
         lesson.createdAt(),
         lesson.updatedAt());
   }
@@ -57,6 +60,7 @@ public record LessonDto(
         lesson.title(),
         lesson.content(),
         lesson.videoUrl(),
+        List.of(),
         lesson.createdAt(),
         lesson.updatedAt());
   }
